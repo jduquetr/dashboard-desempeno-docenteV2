@@ -122,13 +122,14 @@ export const SAMPLE_DATA: Profesor[] = [
 ];
 
 /* ============================================================================
- * 1b. CARGA DE DATOS DESDE UNA CARPETA LOCAL (.csv)
+ * 1b. CARGA DE DATOS DESDE UNA CARPETA LOCAL (.csv y/o .md)
  * ----------------------------------------------------------------------------
  * El dashboard no trae datos reales embebidos: al abrirlo, pide seleccionar
- * una carpeta local que contenga uno o más archivos .csv con la información
- * de los profesores. Los encabezados esperados coinciden con los campos de
- * `Profesor`, con alias comunes en español; los campos totales/perfil se
- * calculan automáticamente si el archivo no los trae.
+ * una carpeta local que contenga archivos .csv (una fila por profesor) y/o
+ * .md (un archivo por profesor, con front-matter YAML o líneas "Campo: valor").
+ * Los encabezados/campos esperados coinciden con `Profesor`, con alias
+ * comunes en español; los campos totales/perfil se calculan automáticamente
+ * si el archivo no los trae.
  * ========================================================================== */
 
 function normalizeHeader(h: string): string {
@@ -284,7 +285,76 @@ function parseProfesoresCSV(text: string): Profesor[] {
   return out;
 }
 
-/** Une los profesores de varios .csv de la carpeta; si un nombre se repite, gana la última fila leída. */
+/**
+ * Convierte un archivo .md de un solo profesor en un `Profesor`. Soporta dos
+ * formatos, que pueden combinarse en el mismo archivo:
+ *  - Front-matter YAML al inicio (--- clave: valor ---)
+ *  - Líneas de cuerpo tipo "**Categoria:** Titular", "- Categoria: Titular"
+ *    o "Categoria: Titular"
+ * El nombre del profesor se toma, en orden, del campo `profesor`/`nombre`,
+ * del primer encabezado "# Nombre" del archivo, o del nombre del archivo.
+ */
+function parseProfesorMarkdown(text: string, fallbackName: string): Profesor | null {
+  const record: Partial<Record<keyof Profesor, string | number>> = {};
+
+  const setField = (rawKey: string, rawValue: string) => {
+    const field = HEADER_ALIASES[normalizeHeader(rawKey)];
+    if (!field) return;
+    const value = rawValue.trim().replace(/^["']|["']$/g, "");
+    record[field] = NUMERIC_FIELDS.includes(field)
+      ? value
+        ? Number(value.replace(",", ".")) || 0
+        : 0
+      : value;
+  };
+
+  let body = text;
+  const frontMatterMatch = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+  if (frontMatterMatch) {
+    body = text.slice(frontMatterMatch[0].length);
+    frontMatterMatch[1].split("\n").forEach((line) => {
+      const m = line.match(/^\s*([^:]+):\s*(.*)$/);
+      if (m) setField(m[1], m[2]);
+    });
+  }
+
+  body.split("\n").forEach((line) => {
+    const m = line.match(/^\s*(?:[-*]\s+)?\*{0,2}([^*:]+?)\*{0,2}\s*:\s*(.+?)\s*$/);
+    if (m) setField(m[1], m[2]);
+  });
+
+  if (!record.profesor) {
+    const titleMatch = body.match(/^#{1,6}\s+(.+)$/m);
+    if (titleMatch) record.profesor = titleMatch[1].trim();
+  }
+  if (!record.profesor && fallbackName) record.profesor = fallbackName;
+  if (!record.profesor) return null;
+
+  const docenciaHoras = Number(record.docenciaHoras ?? 0);
+  const innovacionHoras = Number(record.innovacionHoras ?? 0);
+  const docenciaTotal = Number(record.docenciaTotal ?? docenciaHoras + innovacionHoras);
+  const investigacionHoras = Number(record.investigacionHoras ?? 0);
+  const gestionHoras = Number(record.gestionHoras ?? 0);
+  const cargaTotal = Number(
+    record.cargaTotal ?? docenciaTotal + investigacionHoras + gestionHoras
+  );
+
+  return {
+    profesor: String(record.profesor),
+    categoria: record.categoria ? String(record.categoria) : "Sin categoría",
+    docenciaHoras,
+    innovacionHoras,
+    docenciaTotal,
+    investigacionHoras,
+    gestionHoras,
+    cargaTotal,
+    perfil: record.perfil
+      ? String(record.perfil)
+      : classifyPerfil({ docenciaTotal, investigacionHoras, gestionHoras, cargaTotal }),
+  };
+}
+
+/** Une los profesores de varios .csv/.md de la carpeta; si un nombre se repite, gana la última fila leída. */
 function dedupeByProfesor(list: Profesor[]): Profesor[] {
   const map = new Map<string, Profesor>();
   list.forEach((p) => map.set(p.profesor, p));
@@ -1356,24 +1426,37 @@ export default function TeacherPerformanceDashboard() {
     setLoadStatus("loading");
     setLoadError("");
 
-    const csvFiles = Array.from(fileList).filter((f) => f.name.toLowerCase().endsWith(".csv"));
-    if (csvFiles.length === 0) {
+    const allFiles = Array.from(fileList);
+    const csvFiles = allFiles.filter((f) => f.name.toLowerCase().endsWith(".csv"));
+    const mdFiles = allFiles.filter((f) => f.name.toLowerCase().endsWith(".md"));
+    if (csvFiles.length === 0 && mdFiles.length === 0) {
       setLoadStatus("error");
-      setLoadError("La carpeta seleccionada no contiene archivos .csv con datos de profesores.");
+      setLoadError("La carpeta seleccionada no contiene archivos .csv ni .md con datos de profesores.");
       e.target.value = "";
       return;
     }
 
     try {
-      const texts = await Promise.all(csvFiles.map((f) => f.text()));
-      const parsed = dedupeByProfesor(texts.flatMap((t) => parseProfesoresCSV(t)));
+      const csvTexts = await Promise.all(csvFiles.map((f) => f.text()));
+      const fromCsv = csvTexts.flatMap((t) => parseProfesoresCSV(t));
+
+      const mdParsed = await Promise.all(
+        mdFiles.map(async (f) => {
+          const text = await f.text();
+          const fallbackName = f.name.replace(/\.md$/i, "").replace(/[_-]+/g, " ").trim();
+          return parseProfesorMarkdown(text, fallbackName);
+        })
+      );
+      const fromMd = mdParsed.filter((p): p is Profesor => p !== null);
+
+      const parsed = dedupeByProfesor([...fromCsv, ...fromMd]);
       if (parsed.length === 0) {
         setLoadStatus("error");
-        setLoadError("No se encontraron filas válidas en los archivos .csv de esa carpeta.");
+        setLoadError("No se encontraron datos válidos en los archivos .csv/.md de esa carpeta.");
         e.target.value = "";
         return;
       }
-      const first = csvFiles[0] as File & { webkitRelativePath?: string };
+      const first = (csvFiles[0] ?? mdFiles[0]) as File & { webkitRelativePath?: string };
       const folder = first.webkitRelativePath?.split("/")[0] || "Carpeta local";
       setProfessors(parsed);
       setSourceLabel(folder);
@@ -1482,8 +1565,8 @@ export default function TeacherPerformanceDashboard() {
           </p>
           <h1 className="mt-1 text-2xl font-bold">Desempeño docente</h1>
           <p className="mt-3 text-sm text-slate-600">
-            Selecciona la carpeta local donde están los archivos .csv con la información de los
-            profesores (docencia, investigación, gestión e innovación).
+            Selecciona la carpeta local donde están los archivos .csv o .md con la información de
+            los profesores (docencia, investigación, gestión e innovación).
           </p>
 
           <button
