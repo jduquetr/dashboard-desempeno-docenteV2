@@ -285,9 +285,105 @@ function parseProfesoresCSV(text: string): Profesor[] {
   return out;
 }
 
+/** Quita las etiquetas <br> (usadas como salto de línea dentro de celdas de tabla) para no romper la extracción de números. */
+function stripBr(text: string): string {
+  return text.replace(/<br\s*\/?>/gi, " ");
+}
+
+/** Toma el valor de una fila de tabla markdown "|**Etiqueta**|valor|...": la celda siguiente a la etiqueta. */
+function extractTableValue(text: string, labelPattern: string): string | null {
+  const re = new RegExp(
+    `\\|\\s*\\*{0,2}\\s*${labelPattern}\\s*\\*{0,2}\\s*\\|\\s*([^|\\n]*)\\|`,
+    "i"
+  );
+  const m = text.match(re);
+  if (!m) return null;
+  const value = m[1].replace(/\*/g, "").trim();
+  return value || null;
+}
+
 /**
- * Convierte un archivo .md de un solo profesor en un `Profesor`. Soporta dos
- * formatos, que pueden combinarse en el mismo archivo:
+ * Extrae, en orden de aparición, los números asociados a cada palabra "Total"
+ * del documento (una por subsección del reporte: 1.1, 1.2, 2.1, 2.2,
+ * Servicios, 4.1, 4.2, 5.1, 5.2). Solo toma la racha de dígitos/espacios/
+ * "|"/"*" que sigue inmediatamente a "Total", ignorando el resto del
+ * documento — así funciona tanto con filas de tabla normales como con
+ * párrafos donde varias subsecciones quedaron pegadas por errores de
+ * conversión del documento original.
+ */
+function extractTotalsSequence(text: string): number[][] {
+  const totals: number[][] = [];
+  const re = /\btotal\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const rest = text.slice(m.index + m[0].length);
+    const run = rest.match(/^[\s|*.,0-9-]*/)?.[0] ?? "";
+    const nums = (run.match(/-?\d+(?:[.,]\d+)?/g) || []).map((n) => Number(n.replace(",", ".")));
+    totals.push(nums);
+  }
+  return totals;
+}
+
+function sumLastTwo(nums: number[]): number {
+  if (nums.length === 0) return 0;
+  if (nums.length === 1) return nums[0];
+  return nums[nums.length - 2] + nums[nums.length - 1];
+}
+
+/**
+ * Parser especializado para el reporte "Asignación académica" exportado por
+ * SGI Almera: una tabla de encabezado con NOMBRES/CATEGORÍA PROFESORAL,
+ * seguida de secciones con filas "Total" de las que se toman las horas.
+ * Se detecta automáticamente por la presencia de una fila "|**NOMBRES**|...".
+ */
+function parseAsignacionAcademica(rawText: string, fallbackName: string): Profesor | null {
+  const text = stripBr(rawText);
+
+  const nombre = extractTableValue(text, "nombres?") ?? fallbackName;
+  if (!nombre) return null;
+
+  const categoria = extractTableValue(text, "categor[ií]a\\s+profesoral") ?? "Sin categoría";
+
+  const totals = extractTotalsSequence(text);
+  const at = (i: number) => totals[i] ?? [];
+
+  const docenciaHoras = at(0).length ? at(0)[at(0).length - 1] : 0;
+  const innovacionHoras = sumLastTwo(at(1));
+  const investigacionHoras = sumLastTwo(at(2)) + sumLastTwo(at(3));
+  const gestionHoras = sumLastTwo(at(4));
+  const sabaticoHoras = sumLastTwo(at(7));
+  const licenciaHoras = sumLastTwo(at(8));
+
+  const docenciaTotal = docenciaHoras + innovacionHoras;
+  const cargaBase = docenciaTotal + investigacionHoras + gestionHoras;
+
+  let cargaTotal = cargaBase;
+  let perfil = classifyPerfil({ docenciaTotal, investigacionHoras, gestionHoras, cargaTotal: cargaBase });
+  if (cargaBase === 0 && sabaticoHoras > 0) {
+    cargaTotal = sabaticoHoras;
+    perfil = "Sabatico";
+  } else if (cargaBase === 0 && licenciaHoras > 0) {
+    cargaTotal = licenciaHoras;
+    perfil = "Licencia";
+  }
+
+  return {
+    profesor: nombre,
+    categoria,
+    docenciaHoras,
+    innovacionHoras,
+    docenciaTotal,
+    investigacionHoras,
+    gestionHoras,
+    cargaTotal,
+    perfil,
+  };
+}
+
+/**
+ * Convierte un archivo .md de un solo profesor en un `Profesor`. Si el
+ * archivo tiene el formato del reporte "Asignación académica" (SGI Almera),
+ * usa ese parser especializado; si no, cae a un formato genérico más simple:
  *  - Front-matter YAML al inicio (--- clave: valor ---)
  *  - Líneas de cuerpo tipo "**Categoria:** Titular", "- Categoria: Titular"
  *    o "Categoria: Titular"
@@ -295,6 +391,14 @@ function parseProfesoresCSV(text: string): Profesor[] {
  * del primer encabezado "# Nombre" del archivo, o del nombre del archivo.
  */
 function parseProfesorMarkdown(text: string, fallbackName: string): Profesor | null {
+  if (/\|\s*\*{0,2}\s*nombres?\s*\*{0,2}\s*\|/i.test(text) || /asignaci[oó]n\s+acad[eé]mica/i.test(text)) {
+    const parsed = parseAsignacionAcademica(text, fallbackName);
+    if (parsed) return parsed;
+  }
+  return parseGenericProfesorMarkdown(text, fallbackName);
+}
+
+function parseGenericProfesorMarkdown(text: string, fallbackName: string): Profesor | null {
   const record: Partial<Record<keyof Profesor, string | number>> = {};
 
   const setField = (rawKey: string, rawValue: string) => {
