@@ -546,6 +546,92 @@ function buildProfesoresFromActRows(rows: ActRow[]): Profesor[] {
   return out;
 }
 
+/* ---------------------------------------------------------------------------
+ * CARGA DE ARCHIVOS .xlsx (reportes "Resumen de Asignación Académica" del
+ * sistema). El lector de Excel (SheetJS) se importa de forma diferida desde su
+ * CDN oficial solo cuando hay .xlsx, para no pesar en el bundle ni cambiar la
+ * build. Cada fila de la tabla es una actividad (Componente + Hrs S1/S2).
+ * ------------------------------------------------------------------------- */
+
+const SHEETJS_URL = "https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs";
+
+/** Deriva el nombre del profesor desde el nombre del archivo (texto entre paréntesis o quitando prefijos del sistema). */
+function nameFromFilename(filename: string): string {
+  let n = filename.replace(/\.(xlsx|xlsm|xls|csv|md)$/i, "");
+  const paren = n.match(/\(([^)]+)\)/);
+  if (paren) return paren[1].trim();
+  n = n.replace(/^(resumen\s+de\s+)?asignaci[oó]n\s*(acad[eé]mica|inicial|actualizada)?/i, "");
+  n = n.replace(/[_-]+/g, " ").trim();
+  return n || filename;
+}
+
+const stripAccentsLower = (s: string) =>
+  String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+
+/** Convierte un libro .xlsx (leído con SheetJS) en filas de actividad tipadas. */
+function xlsxWorkbookToActRows(wb: any, XLSX: any, fallbackName: string): ActRow[] {
+  const out: ActRow[] = [];
+  const sheetName: string = wb.SheetNames[0];
+  const ws = wb.Sheets[sheetName];
+  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: "" });
+  if (!rows.length) return out;
+
+  // Nombre y categoría del profesor, si el archivo trae un bloque de encabezado.
+  let profesor = "";
+  let categoria = "";
+  rows.forEach((row) => {
+    row.forEach((cell, ci) => {
+      const t = stripAccentsLower(cell).trim();
+      if ((t === "nombres" || t === "nombre") && !profesor) {
+        const v = row[ci + 1];
+        if (v) profesor = String(v).trim();
+      }
+      if (t.startsWith("categoria profesoral") && !categoria) {
+        const v = row[ci + 1];
+        if (v) categoria = String(v).trim();
+      }
+    });
+  });
+  if (!profesor) profesor = fallbackName;
+  if (!categoria) categoria = "Sin categoría";
+
+  // Fila de encabezado de la tabla de actividades (Componente + Hrs S1/S2).
+  let headerIdx = -1;
+  let cCmp = -1;
+  let cS1 = -1;
+  let cS2 = -1;
+  let cAct = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const norm = rows[i].map((c) => stripAccentsLower(c).replace(/[^a-z0-9]/g, ""));
+    const cmp = norm.findIndex((h) => h === "componente");
+    const s1 = norm.findIndex((h) => h === "hrss1" || h === "horass1");
+    const s2 = norm.findIndex((h) => h === "hrss2" || h === "horass2");
+    if (cmp >= 0 && (s1 >= 0 || s2 >= 0)) {
+      headerIdx = i;
+      cCmp = cmp;
+      cS1 = s1;
+      cS2 = s2;
+      cAct = norm.findIndex(
+        (h) => h.startsWith("descripcion") || h === "evidencia" || h === "actividad"
+      );
+      break;
+    }
+  }
+  if (headerIdx < 0) return out;
+
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const componente = String(row[cCmp] ?? "").trim();
+    if (!componente || componente.toLowerCase() === "total") continue;
+    const hrsS1 = cS1 >= 0 ? Number(String(row[cS1] ?? "").replace(",", ".")) || 0 : 0;
+    const hrsS2 = cS2 >= 0 ? Number(String(row[cS2] ?? "").replace(",", ".")) || 0 : 0;
+    const actividad = cAct >= 0 ? String(row[cAct] ?? "").trim() : "";
+    if (hrsS1 === 0 && hrsS2 === 0 && !actividad) continue;
+    out.push({ profesor, categoria, componente, actividad, hrsS1, hrsS2 });
+  }
+  return out;
+}
+
 /** Quita las etiquetas <br> (usadas como salto de línea dentro de celdas de tabla) para no romper la extracción de números. */
 function stripBr(text: string): string {
   return text.replace(/<br\s*\/?>/gi, " ");
@@ -2198,9 +2284,10 @@ export default function TeacherPerformanceDashboard() {
     const allFiles = Array.from(fileList);
     const csvFiles = allFiles.filter((f) => f.name.toLowerCase().endsWith(".csv"));
     const mdFiles = allFiles.filter((f) => f.name.toLowerCase().endsWith(".md"));
-    if (csvFiles.length === 0 && mdFiles.length === 0) {
+    const xlsxFiles = allFiles.filter((f) => /\.(xlsx|xlsm|xls)$/i.test(f.name));
+    if (csvFiles.length === 0 && mdFiles.length === 0 && xlsxFiles.length === 0) {
       setLoadStatus("error");
-      setLoadError("La carpeta seleccionada no contiene archivos .csv ni .md con datos de profesores.");
+      setLoadError("La carpeta seleccionada no contiene archivos .xlsx, .csv ni .md con datos de profesores.");
       e.target.value = "";
       return;
     }
@@ -2228,14 +2315,39 @@ export default function TeacherPerformanceDashboard() {
       );
       const fromMd = mdParsed.filter((p): p is Profesor => p !== null);
 
-      const parsed = dedupeByProfesor([...fromCsv, ...fromMd]);
+      // .xlsx: lector de Excel cargado de forma diferida desde el CDN de SheetJS.
+      let fromXlsx: Profesor[] = [];
+      let xlsxReaderFailed = false;
+      if (xlsxFiles.length) {
+        try {
+          const XLSX: any = await import(/* @vite-ignore */ SHEETJS_URL);
+          const xlsxActRows: ActRow[] = [];
+          for (const f of xlsxFiles) {
+            try {
+              const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: "array" });
+              xlsxActRows.push(...xlsxWorkbookToActRows(wb, XLSX, nameFromFilename(f.name)));
+            } catch {
+              /* archivo .xlsx ilegible: se omite */
+            }
+          }
+          fromXlsx = buildProfesoresFromActRows(xlsxActRows);
+        } catch {
+          xlsxReaderFailed = true;
+        }
+      }
+
+      const parsed = dedupeByProfesor([...fromCsv, ...fromXlsx, ...fromMd]);
       if (parsed.length === 0) {
         setLoadStatus("error");
-        setLoadError("No se encontraron datos válidos en los archivos .csv/.md de esa carpeta.");
+        setLoadError(
+          xlsxReaderFailed
+            ? "No se pudo cargar el lector de Excel (¿sin conexión a internet?). Inténtalo con conexión o convierte los .xlsx a .csv."
+            : "No se encontraron datos válidos en los archivos de esa carpeta."
+        );
         e.target.value = "";
         return;
       }
-      const first = (csvFiles[0] ?? mdFiles[0]) as File & { webkitRelativePath?: string };
+      const first = (csvFiles[0] ?? xlsxFiles[0] ?? mdFiles[0]) as File & { webkitRelativePath?: string };
       const folder = first.webkitRelativePath?.split("/")[0] || "Carpeta local";
       setProfessors(parsed);
       setSourceLabel(folder);
@@ -2347,8 +2459,8 @@ export default function TeacherPerformanceDashboard() {
           </p>
           <h1 className="mt-1 text-2xl font-bold">Desempeño docente</h1>
           <p className="mt-3 text-sm text-slate-600">
-            Selecciona la carpeta local donde están los archivos .csv o .md con la información de
-            los profesores (docencia, investigación, gestión e innovación).
+            Selecciona la carpeta local donde están los reportes de los profesores (.xlsx tal como
+            los exporta el sistema, o .csv/.md): docencia, investigación, gestión e innovación.
           </p>
 
           <button
