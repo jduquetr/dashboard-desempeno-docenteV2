@@ -1494,6 +1494,145 @@ function IntegralSection({ profesores }: { profesores: Profesor[] }) {
 }
 
 /* ============================================================================
+ * 8b. EXPLICACIÓN DEL Z-SCORE
+ * ========================================================================== */
+
+/** Fila de la tabla de interpretación de valores de z-score. */
+function ZRow({ range, tone, label, detail }: { range: string; tone: string; label: string; detail: string }) {
+  return (
+    <tr className="border-b border-slate-100 last:border-0">
+      <td className="whitespace-nowrap py-2 pr-4 font-mono text-xs font-semibold text-slate-700">{range}</td>
+      <td className="py-2 pr-4">
+        <span className={`inline-block h-2.5 w-2.5 rounded-full ${tone}`} />
+      </td>
+      <td className="py-2 pr-4 text-sm font-medium text-slate-800">{label}</td>
+      <td className="py-2 text-sm text-slate-500">{detail}</td>
+    </tr>
+  );
+}
+
+/**
+ * Sección educativa fija al final del dashboard: explica qué es el z-score,
+ * cómo se calcula con la fórmula exacta que usa esta app, con qué datos, y
+ * cómo interpretarlo. No depende de los filtros — es documentación estática.
+ */
+function ZScoreExplainer() {
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+      <header className="border-b border-slate-100 px-5 py-4">
+        <h2 className="text-base font-bold text-slate-900">¿Qué es el z-score? (parámetro de equilibrio)</h2>
+        <p className="text-xs text-slate-500">
+          El indicador que usa este dashboard para decir qué tan "equilibrada" está la carga de un
+          profesor frente al resto del grupo.
+        </p>
+      </header>
+
+      <div className="grid grid-cols-1 gap-6 px-5 py-5 lg:grid-cols-2">
+        {/* Columna izquierda: definición + fórmula */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">1. Qué mide</h3>
+            <p className="mt-1 text-sm leading-relaxed text-slate-600">
+              El <strong>z-score</strong> (o puntuación estándar) indica{" "}
+              <strong>a cuántas desviaciones estándar de distancia</strong> está el valor de un
+              profesor respecto al <strong>promedio del grupo</strong> que se está analizando (el
+              grupo filtrado, no siempre todos los profesores). No mide el valor en sí (horas), sino
+              su <em>posición relativa</em>: si está por encima, por debajo, o en la media del grupo.
+            </p>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">2. Fórmula</h3>
+            <div className="mt-2 rounded-lg bg-slate-50 px-4 py-3 font-mono text-sm text-slate-800">
+              z = (valor − media del grupo) / desviación estándar del grupo
+            </div>
+            <ul className="mt-2 space-y-1 text-sm text-slate-600">
+              <li>
+                <strong>valor</strong>: la métrica del profesor (p. ej. sus horas de investigación).
+              </li>
+              <li>
+                <strong>media del grupo</strong>: promedio de esa métrica entre todos los profesores
+                del grupo filtrado actualmente visible.
+              </li>
+              <li>
+                <strong>desviación estándar</strong>: qué tan dispersos están los valores del grupo
+                alrededor de esa media (poca dispersión → números parecidos entre profesores; mucha
+                dispersión → números muy distintos).
+              </li>
+            </ul>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">3. Parámetros que usa este dashboard</h3>
+            <ul className="mt-1 list-disc space-y-1 pl-4 text-sm leading-relaxed text-slate-600">
+              <li>
+                La media y la desviación estándar <strong>se recalculan cada vez que cambian los
+                filtros</strong>: el z-score de un profesor puede cambiar si filtras por categoría o
+                perfil, porque cambia el grupo de comparación.
+              </li>
+              <li>
+                Los profesores en perfil <strong>"Sabático"</strong> se excluyen del cálculo de
+                promedio y desviación (no compiten en carga con quienes están activos), aunque sí
+                aparecen en los totales de carga.
+              </li>
+              <li>
+                El <strong>"z-score" que ves en las tarjetas de "Mejor global" / "Desempeño más
+                bajo"</strong> es un puntaje combinado: el promedio de los z-scores individuales de{" "}
+                <strong>Docencia total, Investigación y Gestión académica</strong> (no incluye
+                Innovación ni Carga total por separado, para no contar horas dos veces).
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Columna derecha: interpretación + por qué "equilibrio" */}
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">4. Cómo leer el número</h3>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full border-collapse">
+                <tbody>
+                  <ZRow range="z = 0" tone="bg-slate-400" label="Exactamente el promedio" detail="Igual que el profesor típico del grupo." />
+                  <ZRow range="z > 0" tone="bg-emerald-500" label="Por encima del promedio" detail="Cuanto mayor, más se aleja hacia arriba." />
+                  <ZRow range="z < 0" tone="bg-rose-500" label="Por debajo del promedio" detail="Cuanto menor (más negativo), más se aleja hacia abajo." />
+                  <ZRow range="|z| ≈ 1" tone="bg-amber-400" label="Diferencia moderada" detail="~1 desviación estándar de distancia del grupo." />
+                  <ZRow range="|z| ≥ 2" tone="bg-rose-600" label="Caso atípico" detail="Muy alejado del resto: vale la pena revisarlo." />
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">5. Por qué es un "parámetro de equilibrio"</h3>
+            <p className="mt-1 text-sm leading-relaxed text-slate-600">
+              Un solo z-score dice si un profesor destaca o queda corto en <em>una</em> métrica. El{" "}
+              <strong>puntaje global</strong> de este dashboard promedia los z-scores de las tres
+              dimensiones (docencia, investigación, gestión): un profesor con puntaje global cercano
+              a 0 no necesariamente tiene poca carga — puede tener una carga{" "}
+              <strong>equilibrada y cercana al promedio en todas las dimensiones</strong>. En cambio,
+              alguien con z-scores muy altos en una dimensión y muy bajos en otra puede tener el mismo
+              promedio, pero un perfil <strong>desequilibrado</strong> (por eso el radar de
+              "Perfil integral" arriba complementa esta lectura: un polígono regular es equilibrado
+              aunque su z-score global sea moderado).
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+            <h3 className="text-sm font-bold text-amber-900">Límites a tener en cuenta</h3>
+            <ul className="mt-1 list-disc space-y-1 pl-4 text-sm leading-relaxed text-amber-900">
+              <li>Es un valor <strong>relativo al grupo</strong>: no compara contra un estándar fijo ni entre distintos semestres o filtros.</li>
+              <li>Es sensible a <strong>valores atípicos</strong> (un profesor con carga extrema puede desplazar la media y la desviación de todo el grupo).</li>
+              <li>Asume una distribución razonablemente simétrica; por eso los <strong>semáforos</strong> de cada métrica (🟢🟡🔴) usan percentiles en vez de z-score cuando la distribución está muy sesgada.</li>
+              <li>Con grupos muy pequeños (pocos profesores filtrados) el z-score es menos confiable.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ============================================================================
  * 9. APP PRINCIPAL: filtros globales + KPIs + secciones
  * ========================================================================== */
 
@@ -1808,6 +1947,9 @@ export default function TeacherPerformanceDashboard() {
         {METRICS.map((m) => (
           <MetricSection key={m.key} metric={m} profesores={filtered} />
         ))}
+
+        {/* Explicación del z-score */}
+        <ZScoreExplainer />
 
         <footer className="pb-6 pt-2 text-center text-[11px] text-slate-400">
           Alertas basadas en los lineamientos de asignación docente y el Decálogo de la decanatura ·
