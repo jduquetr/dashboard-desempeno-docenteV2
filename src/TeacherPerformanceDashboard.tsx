@@ -27,6 +27,8 @@ import {
   PolarRadiusAxis,
   Radar,
   Legend,
+  PieChart,
+  Pie,
 } from "recharts";
 
 /* ============================================================================
@@ -34,6 +36,21 @@ import {
  * ========================================================================== */
 
 export type Semaforo = "VERDE" | "AMARILLO" | "ROJO" | "NA";
+
+/**
+ * Detalle de una actividad reportada por un profesor, con las horas separadas
+ * por semestre. Alimenta la página de análisis individual (tabla por ítem +
+ * gráficos). Es opcional en `Profesor`: solo está presente cuando los datos
+ * cargados traen el desglose por actividad (CSV consolidado a nivel actividad).
+ */
+export interface Actividad {
+  /** Sección/componente del reporte: docencia, innovación, investigación, gestión, etc. */
+  componente: string;
+  /** Descripción o evidencia concreta de la actividad. */
+  actividad: string;
+  hrsS1: number;
+  hrsS2: number;
+}
 
 export interface Profesor {
   profesor: string;
@@ -45,6 +62,66 @@ export interface Profesor {
   gestionHoras: number;
   cargaTotal: number;
   perfil: string;
+  /** Detalle opcional por actividad (para la página de análisis individual). */
+  actividades?: Actividad[];
+}
+
+/* ---------------------------------------------------------------------------
+ * Dimensiones del quehacer profesoral: agrupan los "componentes" del reporte
+ * en 4 categorías principales (+ "otros"). Se usan tanto para agregar horas
+ * como para colorear los gráficos de la página individual.
+ * ------------------------------------------------------------------------- */
+
+export type Dimension = "docencia" | "innovacion" | "investigacion" | "gestion" | "otros";
+
+export const DIMENSION_META: Record<Dimension, { label: string; color: string }> = {
+  docencia: { label: "Docencia", color: "#2563eb" },
+  innovacion: { label: "Innovación", color: "#7c3aed" },
+  investigacion: { label: "Investigación", color: "#059669" },
+  gestion: { label: "Gestión y proyección", color: "#d97706" },
+  otros: { label: "Formación y otros", color: "#64748b" },
+};
+
+/** Mapea el texto de un "componente" del reporte a una de las dimensiones. */
+export function componenteToDimension(componente: string): Dimension {
+  const s = componente
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+  if (/ciencia|ctei|tecnologia e innovacion|investigacion|proyecto/.test(s)) return "investigacion";
+  if (/innovacion educativa|docencia e innovacion|^innovacion$/.test(s)) return "innovacion";
+  if (/programacion academica|docencia directa|^docencia$/.test(s) || s.includes("docencia"))
+    return "docencia";
+  if (/servicio|proyeccion social|gestion|administracion|jefatura/.test(s)) return "gestion";
+  return "otros";
+}
+
+/** Suma las horas (S1+S2) de una lista de actividades, agrupadas por dimensión. */
+export function sumByDimension(actividades: Actividad[]): Record<Dimension, number> {
+  const out: Record<Dimension, number> = {
+    docencia: 0,
+    innovacion: 0,
+    investigacion: 0,
+    gestion: 0,
+    otros: 0,
+  };
+  actividades.forEach((a) => {
+    out[componenteToDimension(a.componente)] += (a.hrsS1 || 0) + (a.hrsS2 || 0);
+  });
+  return out;
+}
+
+/** Deriva los campos agregados de `Profesor` a partir del detalle por actividad. */
+export function aggregatesFromActividades(actividades: Actividad[]) {
+  const r = (v: number) => Math.round(v * 10) / 10;
+  const d = sumByDimension(actividades);
+  const docenciaHoras = r(d.docencia);
+  const innovacionHoras = r(d.innovacion);
+  const investigacionHoras = r(d.investigacion);
+  const gestionHoras = r(d.gestion);
+  const docenciaTotal = r(docenciaHoras + innovacionHoras);
+  const cargaTotal = r(docenciaTotal + investigacionHoras + gestionHoras);
+  return { docenciaHoras, innovacionHoras, docenciaTotal, investigacionHoras, gestionHoras, cargaTotal };
 }
 
 export type MetricKey =
@@ -120,6 +197,83 @@ export const SAMPLE_DATA: Profesor[] = [
   { profesor: "Juan Carlos Botero Palacio", categoria: "Escalafon_Puntos", docenciaHoras: 336, innovacionHoras: 87, docenciaTotal: 423, investigacionHoras: 398, gestionHoras: 376, cargaTotal: 1197, perfil: "Balanceado" },
   { profesor: "Luis Eduardo Olmos Sanchez", categoria: "Asistente I", docenciaHoras: 302, innovacionHoras: 60, docenciaTotal: 362, investigacionHoras: 421, gestionHoras: 219, cargaTotal: 1117, perfil: "Investigacion" },
 ];
+
+/**
+ * Detalle por actividad (S1/S2) para algunos profesores de ejemplo, tomado de
+ * sus reportes reales de asignación académica. Solo cubre una parte del grupo:
+ * los demás usan el resumen agregado en la página individual. Al cargar tu
+ * propio CSV consolidado a nivel actividad, TODOS los profesores muestran este
+ * mismo nivel de detalle.
+ */
+export const SAMPLE_ACTIVIDADES: Record<string, Actividad[]> = {
+  "Cristian Camilo Osorio Gomez": [
+    { componente: "Docencia", actividad: "Acueductos y Alcantarillados (4406)", hrsS1: 24, hrsS2: 0 },
+    { componente: "Innovación", actividad: "Experiencias de aprendizaje experiencial", hrsS1: 48, hrsS2: 0 },
+    { componente: "Innovación", actividad: "Diseño mesocurricular de programa", hrsS1: 436, hrsS2: 0 },
+    { componente: "Innovación", actividad: "Rediseño de syllabus", hrsS1: 65, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Miembro de comités de CTeI", hrsS1: 48, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Publicación bibliográfica (GNC)", hrsS1: 145, hrsS2: 0 },
+    { componente: "Gestión", actividad: "Promoción y mercadeo de programas", hrsS1: 70, hrsS2: 0 },
+  ],
+  "Juan Pablo Ospina Zapata": [
+    { componente: "Docencia", actividad: "Movilidad Urbana (6792)", hrsS1: 131, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Transporte Urbano - Vías Urb. (7016)", hrsS1: 70, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Sistemas de Transporte (4409)", hrsS1: 70, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Principios de Diseño Urbano (5000)", hrsS1: 131, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Proyecto: Modelos de interacción espacial", hrsS1: 109, hrsS2: 108 },
+    { componente: "Investigación", actividad: "Proyecto: La forma de las ciudades", hrsS1: 106, hrsS2: 108 },
+    { componente: "Investigación", actividad: "Coordinación de grupos de investigación", hrsS1: 44, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Liderazgo de semilleros", hrsS1: 19, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Publicación bibliográfica (GNC)", hrsS1: 28, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Dirección de tesis doctoral", hrsS1: 17, hrsS2: 17 },
+    { componente: "Investigación", actividad: "Dirección de tesis doctoral", hrsS1: 17, hrsS2: 17 },
+    { componente: "Investigación", actividad: "Formulación de proyectos de CTeI", hrsS1: 17, hrsS2: 17 },
+    { componente: "Gestión", actividad: "Jefatura de programa", hrsS1: 61, hrsS2: 0 },
+    { componente: "Gestión", actividad: "Participación en comités y consejos", hrsS1: 52, hrsS2: 0 },
+  ],
+  "Alejandra Maria Carmona Duque": [
+    { componente: "Docencia", actividad: "Ecología Urbana (4997)", hrsS1: 120, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Tesis Doctoral-1 (7463)", hrsS1: 72, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Cambio Climático (5791)", hrsS1: 144, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Cambio Climático (5559)", hrsS1: 60, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Proyecto: Detección de tendencias hidroclimatológicas", hrsS1: 109, hrsS2: 106 },
+    { componente: "Investigación", actividad: "Proyecto: Drenaje urbano Valle de Aburrá", hrsS1: 109, hrsS2: 108 },
+    { componente: "Investigación", actividad: "Publicación bibliográfica (GNC)", hrsS1: 20, hrsS2: 20 },
+    { componente: "Investigación", actividad: "Publicación bibliográfica (GNC)", hrsS1: 20, hrsS2: 20 },
+    { componente: "Investigación", actividad: "Publicación bibliográfica (GNC)", hrsS1: 24, hrsS2: 24 },
+    { componente: "Investigación", actividad: "Coordinación de grupos de investigación", hrsS1: 24, hrsS2: 24 },
+    { componente: "Investigación", actividad: "Liderazgo de semilleros", hrsS1: 20, hrsS2: 19 },
+    { componente: "Gestión", actividad: "Participación en comités y consejos", hrsS1: 22, hrsS2: 22 },
+    { componente: "Gestión", actividad: "Grupos de estudio y primarios", hrsS1: 22, hrsS2: 22 },
+    { componente: "Gestión", actividad: "Coordinación de línea académica", hrsS1: 44, hrsS2: 43 },
+    { componente: "Gestión", actividad: "Otro servicio interno", hrsS1: 26, hrsS2: 22 },
+    { componente: "Gestión", actividad: "Cuerpos colegiados externos (proyección social)", hrsS1: 24, hrsS2: 24 },
+    { componente: "Gestión", actividad: "Tutoría y asesoría a estudiantes", hrsS1: 13, hrsS2: 13 },
+  ],
+  "Jose Fernando Duque Trujillo": [
+    { componente: "Docencia", actividad: "Énfasis I (4289)", hrsS1: 120, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Geología Estructural (4275)", hrsS1: 48, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Tectónica (4278)", hrsS1: 110, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Geología Estructural (4274)", hrsS1: 72, hrsS2: 0 },
+    { componente: "Docencia", actividad: "Geología Estructural (4697)", hrsS1: 0, hrsS2: 48 },
+    { componente: "Docencia", actividad: "Énfasis I (3908)", hrsS1: 0, hrsS2: 48 },
+    { componente: "Docencia", actividad: "Tectónica (3898)", hrsS1: 0, hrsS2: 48 },
+    { componente: "Investigación", actividad: "Proyecto: CCUS con recobro mejorado de gas (SIMCCS)", hrsS1: 34, hrsS2: 0 },
+    { componente: "Investigación", actividad: "Proyecto: Procedencia secciones estratigráficas Urabá", hrsS1: 38, hrsS2: 0 },
+    { componente: "Gestión", actividad: "Participación en comités y consejos", hrsS1: 144, hrsS2: 0 },
+    { componente: "Gestión", actividad: "Dirección de área académica", hrsS1: 305, hrsS2: 432 },
+  ],
+};
+
+/* Adjunta el detalle por actividad a los profesores de ejemplo que lo tienen y
+   recalcula sus horas agregadas para que el resumen y el detalle sean consistentes. */
+SAMPLE_DATA.forEach((p) => {
+  const acts = SAMPLE_ACTIVIDADES[p.profesor];
+  if (acts) {
+    p.actividades = acts;
+    Object.assign(p, aggregatesFromActividades(acts));
+  }
+});
 
 /* ============================================================================
  * 1b. CARGA DE DATOS DESDE UNA CARPETA LOCAL (.csv y/o .md)
@@ -282,6 +436,113 @@ function parseProfesoresCSV(text: string): Profesor[] {
         : classifyPerfil({ docenciaTotal, investigacionHoras, gestionHoras, cargaTotal }),
     });
   }
+  return out;
+}
+
+/* ---------------------------------------------------------------------------
+ * CSV consolidado a nivel de ACTIVIDAD (una fila por actividad de cada
+ * profesor). Es el formato recomendado: alimenta a la vez el análisis
+ * comparativo (agregando horas) y la página de análisis individual (detalle
+ * por ítem y por semestre). Columnas esperadas (con alias):
+ *   profesor, categoria, componente, actividad, hrsS1, hrsS2
+ * ------------------------------------------------------------------------- */
+
+interface ActRow {
+  profesor: string;
+  categoria: string;
+  componente: string;
+  actividad: string;
+  hrsS1: number;
+  hrsS2: number;
+}
+
+const ACT_HEADER: Record<string, keyof ActRow> = {
+  profesor: "profesor",
+  nombre: "profesor",
+  docente: "profesor",
+  nombreprofesor: "profesor",
+  categoria: "categoria",
+  categoriaprofesoral: "categoria",
+  componente: "componente",
+  seccion: "componente",
+  dimension: "componente",
+  area: "componente",
+  actividad: "actividad",
+  descripcion: "actividad",
+  descripcionevidencia: "actividad",
+  evidencia: "actividad",
+  item: "actividad",
+  detalle: "actividad",
+  hrss1: "hrsS1",
+  horass1: "hrsS1",
+  hs1: "hrsS1",
+  hrss2: "hrsS2",
+  horass2: "hrsS2",
+  hs2: "hrsS2",
+};
+
+/** ¿El encabezado del CSV corresponde al formato por actividad (componente + horas por semestre)? */
+function csvHeaderIsActividad(header: string[]): boolean {
+  const fields = header.map((h) => ACT_HEADER[normalizeHeader(h)]);
+  return fields.includes("componente") && (fields.includes("hrsS1") || fields.includes("hrsS2"));
+}
+
+/** Convierte un CSV por actividad en filas tipadas `ActRow`. */
+function parseActividadRows(text: string): ActRow[] {
+  const rows = parseCSV(text);
+  if (rows.length < 2) return [];
+  const fieldByCol = rows[0].map((h) => ACT_HEADER[normalizeHeader(h)]);
+  const out: ActRow[] = [];
+  for (let r = 1; r < rows.length; r++) {
+    const cells = rows[r];
+    const rec: ActRow = { profesor: "", categoria: "", componente: "", actividad: "", hrsS1: 0, hrsS2: 0 };
+    fieldByCol.forEach((field, i) => {
+      if (!field) return;
+      const raw = (cells[i] ?? "").trim();
+      if (field === "hrsS1") rec.hrsS1 = raw ? Number(raw.replace(",", ".")) || 0 : 0;
+      else if (field === "hrsS2") rec.hrsS2 = raw ? Number(raw.replace(",", ".")) || 0 : 0;
+      else if (field === "profesor") rec.profesor = raw;
+      else if (field === "categoria") rec.categoria = raw;
+      else if (field === "componente") rec.componente = raw;
+      else if (field === "actividad") rec.actividad = raw;
+    });
+    if (!rec.profesor) continue;
+    out.push(rec);
+  }
+  return out;
+}
+
+/** Agrupa filas de actividad por profesor y construye `Profesor[]` con detalle + agregados derivados. */
+function buildProfesoresFromActRows(rows: ActRow[]): Profesor[] {
+  const byProf = new Map<string, ActRow[]>();
+  rows.forEach((r) => {
+    const list = byProf.get(r.profesor) ?? [];
+    list.push(r);
+    byProf.set(r.profesor, list);
+  });
+  const out: Profesor[] = [];
+  byProf.forEach((list, profesor) => {
+    const actividades: Actividad[] = list.map((r) => ({
+      componente: r.componente,
+      actividad: r.actividad,
+      hrsS1: r.hrsS1,
+      hrsS2: r.hrsS2,
+    }));
+    const categoria = list.map((r) => r.categoria).find((c) => c && c.trim()) || "Sin categoría";
+    const agg = aggregatesFromActividades(actividades);
+    out.push({
+      profesor,
+      categoria,
+      ...agg,
+      perfil: classifyPerfil({
+        docenciaTotal: agg.docenciaTotal,
+        investigacionHoras: agg.investigacionHoras,
+        gestionHoras: agg.gestionHoras,
+        cargaTotal: agg.cargaTotal,
+      }),
+      actividades,
+    });
+  });
   return out;
 }
 
@@ -1494,6 +1755,267 @@ function IntegralSection({ profesores }: { profesores: Profesor[] }) {
 }
 
 /* ============================================================================
+ * 8a. PÁGINA DE ANÁLISIS INDIVIDUAL POR PROFESOR
+ * ========================================================================== */
+
+const DIM_ORDER: Dimension[] = ["docencia", "innovacion", "investigacion", "gestion", "otros"];
+
+/** Tarjeta compacta de total (horas) para la cabecera de la página individual. */
+function TotalCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="mt-0.5 text-xl font-bold tabular-nums" style={color ? { color } : undefined}>
+        {value}
+      </p>
+      {sub && <p className="text-[11px] text-slate-400">{sub}</p>}
+    </div>
+  );
+}
+
+/**
+ * Página de análisis de un solo profesor: tabla de horas por ítem y por
+ * semestre (S1/S2), con sumatoria por semestre y el % de tiempo que representa
+ * cada actividad; y, en la parte inferior, los mismos datos de forma gráfica
+ * (torta por dimensión + barras S1/S2). Si los datos cargados no traen detalle
+ * por actividad, cae a un resumen por las 4 dimensiones agregadas.
+ */
+function ProfesorDetailPage({ profesor, onBack }: { profesor: Profesor; onBack: () => void }) {
+  const sum = (arr: number[]) => arr.reduce((s, v) => s + v, 0);
+  const r1 = (v: number) => Math.round(v * 10) / 10;
+
+  const hasSemestral = !!(profesor.actividades && profesor.actividades.length);
+
+  const actividades: Actividad[] = hasSemestral
+    ? profesor.actividades!
+    : (
+        [
+          { componente: "Docencia", actividad: "Docencia directa", hrsS1: profesor.docenciaHoras, hrsS2: 0 },
+          { componente: "Innovación", actividad: "Innovación docente", hrsS1: profesor.innovacionHoras, hrsS2: 0 },
+          { componente: "Investigación", actividad: "Investigación", hrsS1: profesor.investigacionHoras, hrsS2: 0 },
+          { componente: "Gestión", actividad: "Gestión y proyección", hrsS1: profesor.gestionHoras, hrsS2: 0 },
+        ] as Actividad[]
+      ).filter((a) => a.hrsS1 > 0);
+
+  const totalS1 = r1(sum(actividades.map((a) => a.hrsS1)));
+  const totalS2 = r1(sum(actividades.map((a) => a.hrsS2)));
+  const grand = r1(totalS1 + totalS2);
+  const pct = (h: number) => (grand ? r1((h / grand) * 100) : 0);
+
+  const groups = DIM_ORDER.map((dim) => ({
+    dim,
+    meta: DIMENSION_META[dim],
+    items: actividades.filter((a) => componenteToDimension(a.componente) === dim),
+  })).filter((g) => g.items.length);
+
+  const byDim = groups.map((g) => {
+    const s1 = r1(sum(g.items.map((i) => i.hrsS1)));
+    const s2 = r1(sum(g.items.map((i) => i.hrsS2)));
+    return { label: g.meta.label, color: g.meta.color, s1, s2, total: r1(s1 + s2) };
+  });
+
+  const pieData = byDim.map((d) => ({ name: d.label, value: d.total, color: d.color }));
+  const barData = byDim.map((d) => ({ name: d.label, S1: d.s1, S2: d.s2, color: d.color }));
+
+  const backButton = (
+    <button
+      onClick={onBack}
+      className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+    >
+      ← Volver al resumen
+    </button>
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {backButton}
+        <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-semibold text-slate-600">
+          {profesor.categoria} · Perfil {profesor.perfil}
+        </span>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-bold text-slate-900">{profesor.profesor}</h2>
+        <p className="text-sm text-slate-500">
+          Horas por actividad y semestre · {actividades.length} actividades reportadas
+        </p>
+      </div>
+
+      {/* Totales por semestre */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <TotalCard label="Horas semestre 1" value={`${totalS1} h`} sub={grand ? `${pct(totalS1)}% del total` : undefined} />
+        <TotalCard label="Horas semestre 2" value={`${totalS2} h`} sub={grand ? `${pct(totalS2)}% del total` : undefined} />
+        <TotalCard label="Carga total anual" value={`${grand} h`} sub="S1 + S2" color="#0f172a" />
+      </div>
+
+      {grand === 0 ? (
+        <div className="rounded-xl border border-slate-200 bg-white px-5 py-8 text-center text-sm text-slate-500">
+          No hay horas por actividad para este profesor
+          {profesor.cargaTotal > 0 && (
+            <> (carga registrada: {profesor.cargaTotal} h, posiblemente en sabático o licencia).</>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Tabla de actividades */}
+          <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <header className="border-b border-slate-100 px-5 py-4">
+              <h3 className="text-base font-bold text-slate-900">Detalle por actividad</h3>
+              <p className="text-xs text-slate-500">
+                {hasSemestral
+                  ? "Horas dedicadas a cada actividad en cada semestre y su participación en la carga total."
+                  : "Los datos cargados no incluyen desglose por semestre ni por ítem; se muestra el resumen por dimensión. Carga un CSV consolidado a nivel de actividad para ver el detalle S1/S2."}
+              </p>
+            </header>
+            <div className="overflow-x-auto">
+              {hasSemestral ? (
+                <table className="w-full min-w-[560px] text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-4 py-2">Actividad</th>
+                      <th className="px-4 py-2 text-right">Hrs S1</th>
+                      <th className="px-4 py-2 text-right">Hrs S2</th>
+                      <th className="px-4 py-2 text-right">Total</th>
+                      <th className="px-4 py-2 text-right">% del total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groups.flatMap((g) => {
+                      const gs1 = r1(sum(g.items.map((i) => i.hrsS1)));
+                      const gs2 = r1(sum(g.items.map((i) => i.hrsS2)));
+                      const gt = r1(gs1 + gs2);
+                      const rows = [
+                        <tr key={`h-${g.dim}`} className="bg-slate-50">
+                          <td className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider" colSpan={5}>
+                            <span className="inline-flex items-center gap-1.5" style={{ color: g.meta.color }}>
+                              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: g.meta.color }} aria-hidden />
+                              {g.meta.label}
+                            </span>
+                          </td>
+                        </tr>,
+                      ];
+                      g.items.forEach((item, idx) => {
+                        const t = r1(item.hrsS1 + item.hrsS2);
+                        rows.push(
+                          <tr key={`${g.dim}-${idx}`} className="border-b border-slate-50 hover:bg-slate-50">
+                            <td className="px-4 py-1.5 text-slate-700">{item.actividad || "—"}</td>
+                            <td className="px-4 py-1.5 text-right tabular-nums text-slate-600">{r1(item.hrsS1)}</td>
+                            <td className="px-4 py-1.5 text-right tabular-nums text-slate-600">{r1(item.hrsS2)}</td>
+                            <td className="px-4 py-1.5 text-right tabular-nums font-medium text-slate-800">{t}</td>
+                            <td className="px-4 py-1.5 text-right tabular-nums text-slate-500">{pct(t)}%</td>
+                          </tr>
+                        );
+                      });
+                      rows.push(
+                        <tr key={`s-${g.dim}`} className="border-b border-slate-100 font-semibold text-slate-700">
+                          <td className="px-4 py-1.5 text-right text-xs uppercase tracking-wider text-slate-400">Subtotal {g.meta.label}</td>
+                          <td className="px-4 py-1.5 text-right tabular-nums">{gs1}</td>
+                          <td className="px-4 py-1.5 text-right tabular-nums">{gs2}</td>
+                          <td className="px-4 py-1.5 text-right tabular-nums">{gt}</td>
+                          <td className="px-4 py-1.5 text-right tabular-nums">{pct(gt)}%</td>
+                        </tr>
+                      );
+                      return rows;
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold text-slate-900">
+                      <td className="px-4 py-2">Total</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{totalS1}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{totalS2}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{grand}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">100%</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              ) : (
+                <table className="w-full min-w-[360px] text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                      <th className="px-4 py-2">Dimensión</th>
+                      <th className="px-4 py-2 text-right">Horas</th>
+                      <th className="px-4 py-2 text-right">% del total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {byDim.map((d) => (
+                      <tr key={d.label} className="hover:bg-slate-50">
+                        <td className="px-4 py-1.5">
+                          <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: d.color }} aria-hidden />
+                            {d.label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-1.5 text-right tabular-nums font-medium text-slate-800">{d.total}</td>
+                        <td className="px-4 py-1.5 text-right tabular-nums text-slate-500">{pct(d.total)}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t-2 border-slate-200 bg-slate-50 font-bold text-slate-900">
+                      <td className="px-4 py-2">Total</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{grand}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">100%</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+          </section>
+
+          {/* Gráficos: a qué dedica el tiempo el profesor */}
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-900">Distribución del tiempo por dimensión</h3>
+              <p className="mb-2 text-xs text-slate-500">Participación de cada dimensión en la carga total.</p>
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={pieData}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius={55}
+                    outerRadius={95}
+                    paddingAngle={2}
+                    isAnimationActive={false}
+                  >
+                    {pieData.map((d) => (
+                      <Cell key={d.name} fill={d.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v) => [`${r1(Number(v))} h`, "Horas"]} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <h3 className="text-sm font-bold text-slate-900">Horas por dimensión y semestre</h3>
+              <p className="mb-2 text-xs text-slate-500">
+                {hasSemestral ? "Comparación de S1 y S2 en cada dimensión." : "Horas por dimensión (sin desglose por semestre)."}
+              </p>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={barData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#64748b" }} interval={0} angle={-12} textAnchor="end" height={50} />
+                  <YAxis tick={{ fontSize: 10, fill: "#64748b" }} />
+                  <Tooltip formatter={(v) => `${r1(Number(v))} h`} />
+                  {hasSemestral && <Legend />}
+                  <Bar dataKey="S1" name="Semestre 1" fill="#2563eb" radius={[3, 3, 0, 0]} isAnimationActive={false} />
+                  {hasSemestral && <Bar dataKey="S2" name="Semestre 2" fill="#93c5fd" radius={[3, 3, 0, 0]} isAnimationActive={false} />}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </section>
+
+          <div>{backButton}</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
  * 8b. EXPLICACIÓN DEL Z-SCORE
  * ========================================================================== */
 
@@ -1654,6 +2176,10 @@ export default function TeacherPerformanceDashboard() {
   const [loadError, setLoadError] = useState("");
   const folderInputRef = useRef<HTMLInputElement>(null);
 
+  /* Vista activa: "resumen" (dashboard comparativo) o el nombre de un profesor
+     para ver su página de análisis individual. */
+  const [view, setView] = useState("resumen");
+
   const resetFilters = () => {
     setFProfesor("");
     setFCategoria("");
@@ -1681,7 +2207,17 @@ export default function TeacherPerformanceDashboard() {
 
     try {
       const csvTexts = await Promise.all(csvFiles.map((f) => f.text()));
-      const fromCsv = csvTexts.flatMap((t) => parseProfesoresCSV(t));
+      const actRows: ActRow[] = [];
+      const aggProfs: Profesor[] = [];
+      csvTexts.forEach((t) => {
+        const rows = parseCSV(t);
+        if (rows.length >= 1 && csvHeaderIsActividad(rows[0])) {
+          actRows.push(...parseActividadRows(t));
+        } else {
+          aggProfs.push(...parseProfesoresCSV(t));
+        }
+      });
+      const fromCsv = [...aggProfs, ...buildProfesoresFromActRows(actRows)];
 
       const mdParsed = await Promise.all(
         mdFiles.map(async (f) => {
@@ -1704,6 +2240,7 @@ export default function TeacherPerformanceDashboard() {
       setProfessors(parsed);
       setSourceLabel(folder);
       setLoadStatus("idle");
+      setView("resumen");
       resetFilters();
     } catch {
       setLoadStatus("error");
@@ -1718,10 +2255,12 @@ export default function TeacherPerformanceDashboard() {
     setSourceLabel("Datos de ejemplo");
     setLoadStatus("idle");
     setLoadError("");
+    setView("resumen");
     resetFilters();
   };
 
   const DATA = professors ?? [];
+  const activeProfesor = view !== "resumen" ? DATA.find((p) => p.profesor === view) ?? null : null;
 
   const filtered = useMemo(
     () =>
@@ -1870,9 +2409,40 @@ export default function TeacherPerformanceDashboard() {
             )}
           </div>
         </div>
+
+        {/* Pestañas: resumen general + una por profesor */}
+        <div className="mx-auto max-w-7xl px-5">
+          <nav className="flex flex-wrap gap-1.5 pb-3" aria-label="Secciones">
+            <button
+              onClick={() => setView("resumen")}
+              aria-current={view === "resumen"}
+              className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                view === "resumen" ? "bg-white text-slate-900" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              Resumen general
+            </button>
+            {DATA.map((p) => (
+              <button
+                key={p.profesor}
+                onClick={() => setView(p.profesor)}
+                aria-current={view === p.profesor}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                  view === p.profesor ? "bg-white text-slate-900" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                }`}
+              >
+                {shortName(p.profesor)}
+              </button>
+            ))}
+          </nav>
+        </div>
       </header>
 
       <main className="mx-auto max-w-7xl space-y-6 px-5 py-6">
+        {activeProfesor ? (
+          <ProfesorDetailPage profesor={activeProfesor} onBack={() => setView("resumen")} />
+        ) : (
+        <>
         {/* Filtros */}
         <section className="flex flex-wrap items-end gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
           <FilterSelect
@@ -1956,6 +2526,8 @@ export default function TeacherPerformanceDashboard() {
           Semáforos de los gráficos calculados estadísticamente sobre el grupo filtrado (media ± 0.5σ
           o percentiles P33/P66 según asimetría) · Fuente: {sourceLabel}
         </footer>
+        </>
+        )}
       </main>
     </div>
   );
